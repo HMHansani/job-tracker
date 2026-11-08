@@ -5,6 +5,15 @@ export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 export async function initDb() {
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id SERIAL PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS jobs (
       id SERIAL PRIMARY KEY,
       company TEXT NOT NULL,
@@ -16,5 +25,11 @@ export async function initDb() {
       notes TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
+  `);
+
+  // Each job now belongs to a user
+  await pool.query(`
+    ALTER TABLE jobs
+    ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE
   `);
 }

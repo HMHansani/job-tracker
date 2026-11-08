@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { pool, initDb } from "./db";
+import { authRouter, requireAuth } from "./auth";
 
 const STATUSES = ["applied", "interview", "offer", "rejected"];
 
@@ -13,13 +14,19 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-// Read all jobs
+app.use("/api/auth", authRouter);
+
+// Every route below needs a valid token
+app.use("/api/jobs", requireAuth);
+
 app.get("/api/jobs", async (_req, res) => {
-  const { rows } = await pool.query("SELECT * FROM jobs ORDER BY created_at DESC");
+  const { rows } = await pool.query(
+    "SELECT * FROM jobs WHERE user_id = $1 ORDER BY created_at DESC",
+    [res.locals.userId]
+  );
   res.json(rows);
 });
 
-// Create a job
 app.post("/api/jobs", async (req, res) => {
   const { company, position, status = "applied", location, link, notes } = req.body;
   if (!company || !position) {
@@ -31,15 +38,19 @@ app.post("/api/jobs", async (req, res) => {
     return;
   }
   const { rows } = await pool.query(
-    `INSERT INTO jobs (company, position, status, location, link, notes)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [company, position, status, location, link, notes]
+    `INSERT INTO jobs (user_id, company, position, status, location, link, notes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+    [res.locals.userId, company, position, status, location, link, notes]
   );
   res.status(201).json(rows[0]);
 });
 
-// Update a job (send only the fields you want to change)
 app.put("/api/jobs/:id", async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
   const { company, position, status, location, link, notes } = req.body;
   if (status !== undefined && !STATUSES.includes(status)) {
     res.status(400).json({ error: "invalid status" });
@@ -53,8 +64,8 @@ app.put("/api/jobs/:id", async (req, res) => {
        location = COALESCE($4, location),
        link = COALESCE($5, link),
        notes = COALESCE($6, notes)
-     WHERE id = $7 RETURNING *`,
-    [company, position, status, location, link, notes, req.params.id]
+     WHERE id = $7 AND user_id = $8 RETURNING *`,
+    [company, position, status, location, link, notes, id, res.locals.userId]
   );
   if (rows.length === 0) {
     res.status(404).json({ error: "job not found" });
@@ -63,9 +74,16 @@ app.put("/api/jobs/:id", async (req, res) => {
   res.json(rows[0]);
 });
 
-// Delete a job
 app.delete("/api/jobs/:id", async (req, res) => {
-  const result = await pool.query("DELETE FROM jobs WHERE id = $1", [req.params.id]);
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: "invalid id" });
+    return;
+  }
+  const result = await pool.query(
+    "DELETE FROM jobs WHERE id = $1 AND user_id = $2",
+    [id, res.locals.userId]
+  );
   if (result.rowCount === 0) {
     res.status(404).json({ error: "job not found" });
     return;
@@ -73,7 +91,6 @@ app.delete("/api/jobs/:id", async (req, res) => {
   res.sendStatus(204);
 });
 
-// Catch any unexpected error
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error(err);
   res.status(500).json({ error: "something went wrong" });
