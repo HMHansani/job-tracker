@@ -1,8 +1,9 @@
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import dotenv from "dotenv";
+import { pool, initDb } from "./db";
 
-dotenv.config();
+const STATUSES = ["applied", "interview", "offer", "rejected"];
 
 const app = express();
 app.use(cors());
@@ -12,7 +13,79 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-const PORT = process.env.PORT || 4000;
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+// Read all jobs
+app.get("/api/jobs", async (_req, res) => {
+  const { rows } = await pool.query("SELECT * FROM jobs ORDER BY created_at DESC");
+  res.json(rows);
 });
+
+// Create a job
+app.post("/api/jobs", async (req, res) => {
+  const { company, position, status = "applied", location, link, notes } = req.body;
+  if (!company || !position) {
+    res.status(400).json({ error: "company and position are required" });
+    return;
+  }
+  if (!STATUSES.includes(status)) {
+    res.status(400).json({ error: "invalid status" });
+    return;
+  }
+  const { rows } = await pool.query(
+    `INSERT INTO jobs (company, position, status, location, link, notes)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+    [company, position, status, location, link, notes]
+  );
+  res.status(201).json(rows[0]);
+});
+
+// Update a job (send only the fields you want to change)
+app.put("/api/jobs/:id", async (req, res) => {
+  const { company, position, status, location, link, notes } = req.body;
+  if (status !== undefined && !STATUSES.includes(status)) {
+    res.status(400).json({ error: "invalid status" });
+    return;
+  }
+  const { rows } = await pool.query(
+    `UPDATE jobs SET
+       company = COALESCE($1, company),
+       position = COALESCE($2, position),
+       status = COALESCE($3, status),
+       location = COALESCE($4, location),
+       link = COALESCE($5, link),
+       notes = COALESCE($6, notes)
+     WHERE id = $7 RETURNING *`,
+    [company, position, status, location, link, notes, req.params.id]
+  );
+  if (rows.length === 0) {
+    res.status(404).json({ error: "job not found" });
+    return;
+  }
+  res.json(rows[0]);
+});
+
+// Delete a job
+app.delete("/api/jobs/:id", async (req, res) => {
+  const result = await pool.query("DELETE FROM jobs WHERE id = $1", [req.params.id]);
+  if (result.rowCount === 0) {
+    res.status(404).json({ error: "job not found" });
+    return;
+  }
+  res.sendStatus(204);
+});
+
+// Catch any unexpected error
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error(err);
+  res.status(500).json({ error: "something went wrong" });
+});
+
+const PORT = process.env.PORT || 4000;
+
+initDb()
+  .then(() => {
+    app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+  })
+  .catch((err) => {
+    console.error("Database connection failed:", err.message);
+    process.exit(1);
+  });
